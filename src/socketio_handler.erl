@@ -30,13 +30,14 @@
 init(Req, [Config]) ->
     Req2 = enable_cors(Req),
     PathInfo = cowboy_req:path_info(Req2),
+    ?DBGPRINT(PathInfo),
     case PathInfo of
         [<<"1">>] ->
-            handle(Req2, #http_state{action = create_session, config = Config, version = 0}};
+            handle(Req2, #http_state{action = create_session, config = Config, version = 0});
         [<<"1">>, <<"xhr-polling">>, Sid] ->
             handle_polling(Req2, Sid, Config, 0, undefined);
         [<<"1">>, <<"websocket">>, _Sid] ->
-            websocket_init(Req, Config);
+            websocket_init(PathInfo, Req, Config);
         _ ->
             KeyValues = cowboy_req:parse_qs(Req2),
             Sid = proplists:get_value(<<"sid">>, KeyValues),
@@ -44,13 +45,13 @@ init(Req, [Config]) ->
             JsonP = proplists:get_value(<<"j">>, KeyValues),
             case {Transport, Sid} of
                 {<<"polling">>, undefined} ->
-                    handle(Req2, #http_state{action = create_session, config = Config, version = 1, jsonp = JsonP}});
+                    handle(Req2, #http_state{action = create_session, config = Config, version = 1, jsonp = JsonP});
                 {<<"polling">>, _} when is_binary(Sid) ->
                     handle_polling(Req2, Sid, Config, 1, JsonP);
                 {<<"websocket">>, _} ->
-                    websocket_init(Req, Config);
+                    websocket_init(PathInfo, Req, Config);
                 _ ->
-                    handle(Req2, #http_state{config = Config}})
+                    handle(Req2, #http_state{config = Config})
             end
     end.
 
@@ -138,10 +139,8 @@ info(_Info, Req, HttpState) ->
 
 terminate(_Reason, _Req, _HttpState = #http_state{type = http, action = create_session}) ->
     ok;
-
 terminate(_Reason, _Req, _HttpState = #http_state{type = http, action = session_in_use}) ->
     ok;
-
 terminate(_Reason, _Req, _HttpState = #http_state{type = http, heartbeat_tref = HeartbeatTRef, pid = Pid}) ->
     safe_unsub_caller(Pid, self()),
     case HeartbeatTRef of
@@ -149,7 +148,10 @@ terminate(_Reason, _Req, _HttpState = #http_state{type = http, heartbeat_tref = 
             ok;
         _ ->
             erlang:cancel_timer(HeartbeatTRef)
-    end.
+    end;
+terminate(_Reason, _Req, #websocket_state{type = websocket, pid = Pid}) ->
+    socketio_session:disconnect(Pid),
+    ok.
 
 text_headers() ->
     [
@@ -252,9 +254,9 @@ handle_polling(Req, Sid, Config, Version, JsonP) ->
         {{ok, Pid}, <<"GET">>} ->
             case socketio_session:pull_no_wait(Pid, self()) of
                 {error, noproc} ->
-                    {ok, reply(400, <<"Can't upgrade">>, Req), #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
+                    {ok, cowboy_req:reply(400, <<"Can't upgrade">>, Req), #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                 session_in_use ->
-                    {ok, reply(400, <<"Can't upgrade">>, Req), #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
+                    {ok, cowboy_req:reply(400, <<"Can't upgrade">>, Req), #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                 [] when Version =:= 1 ->
                     case socketio_session:transport(Pid) of
                         websocket ->
@@ -287,12 +289,12 @@ handle_polling(Req, Sid, Config, Version, JsonP) ->
                                end,
                     case socketio_session:recv(Pid, Messages) of
                         noproc ->
-                            {ok, reply(400, <<"Can't upgrade">>, Req2), #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
+                            {ok, cowboy_req:reply(400, <<"Can't upgrade">>, Req2), #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                         _ ->
                             {ok, Req2, #http_state{action = ok, config = Config, sid = Sid, version = Version, jsonp = JsonP}}
                     end;
                 error ->
-                    {ok, reply(400, <<"Can't upgrade">>, Req), #http_state{action = error, config = Config, sid = Sid, version = Version}}
+                    {ok, cowboy_req:reply(400, <<"Can't upgrade">>, Req), #http_state{action = error, config = Config, sid = Sid, version = Version}}
             end;
         {{error, not_found}, _} ->
             {ok, Req, #http_state{action = not_found, sid = Sid, config = Config, version = Version, jsonp = JsonP}};
@@ -301,8 +303,8 @@ handle_polling(Req, Sid, Config, Version, JsonP) ->
     end.
 
 %% Websocket handlers
-websocket_init(Req, [Config]) ->
-    PathInfo = cowboy_req:path_info(Req),
+websocket_init(PathInfo, Req, [Config]) ->
+    ?DBGPRINT(PathInfo),
     case PathInfo of
         [<<"1">>, <<"websocket">>, Sid] ->
             case socketio_session:find(Sid) of
@@ -312,7 +314,7 @@ websocket_init(Req, [Config]) ->
                     erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
                     {cowboy_websocket, Req, #websocket_state{config = Config, pid = Pid, messages = [], version = 0}, hibernate};
                 {error, not_found} ->
-                    {ok, reply(500, <<"No such session">>, Req)}
+                    {ok, cowboy_req:reply(500, <<"No such session">>, Req)}
             end;
         _ ->
             KeyValues = cowboy_req:parse_qs(Req),
@@ -324,10 +326,10 @@ websocket_init(Req, [Config]) ->
                             socketio_session:upgrade_transport(Pid, websocket),
                             {cowboy_websocket, Req, #websocket_state{config = Config, pid = Pid, messages = [], version = 1}, hibernate};
                         {error, not_found} ->
-                            {ok, reply(500, <<"No such session">>, Req)}
+                            {ok, cowboy_req:reply(500, <<"No such session">>, Req)}
                     end;
                 _ ->
-                    {ok, reply(500, <<"No such session">>, Req)}
+                    {ok, cowboy_req:reply(500, <<"No such session">>, Req)}
             end
     end.
 
@@ -411,10 +413,6 @@ websocket_info({'DOWN', _Ref, process, Pid, _Reason}, Req, State = #websocket_st
     {shutdown, Req, State};
 websocket_info(_Info, Req, State) ->
     {ok, Req, State, hibernate}.
-
-terminate(_Reason, _Req, #websocket_state{type = websocket, pid = Pid}) ->
-    socketio_session:disconnect(Pid),
-    ok.
 
 enable_cors(Req) ->
     case cowboy_req:header(<<"origin">>, Req) of
