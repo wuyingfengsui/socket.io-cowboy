@@ -16,37 +16,41 @@
 -author('Kirill Trofimov <sinnus@gmail.com>').
 -include("socketio_internal.hrl").
 
--export([init/3, handle/2, info/3, terminate/3,
-         websocket_init/3, websocket_handle/3,
-         websocket_info/3, websocket_terminate/3]).
+-export([init/2, terminate/3,
+         info/3,
+         websocket_handle/3, websocket_info/3]).
 
--record(http_state, {action, config, sid, heartbeat_tref, messages, pid, version, jsonp}).
--record(websocket_state, {config, pid, messages, version}).
+% 'type' is always http for http_state, and 'websocket' for websocket_state.
+%
+% We need it only to distinguish which type of record (since it's just a tuple
+% at runtime) we are getting in the 'terminate' call.
+-record(http_state, {type, action, config, sid, heartbeat_tref, messages, pid, version, jsonp}).
+-record(websocket_state, {type, config, pid, messages, version}).
 
-init({_, http}, Req, [Config]) ->
+init(Req, [Config]) ->
     Req2 = enable_cors(Req),
-    {PathInfo, _} = cowboy_req:path_info(Req2),
+    PathInfo = cowboy_req:path_info(Req2),
     case PathInfo of
         [<<"1">>] ->
-            {ok, Req2, #http_state{action = create_session, config = Config, version = 0}};
+            handle(Req2, #http_state{type = http, action = create_session, config = Config, version = 0}};
         [<<"1">>, <<"xhr-polling">>, Sid] ->
             handle_polling(Req2, Sid, Config, 0, undefined);
         [<<"1">>, <<"websocket">>, _Sid] ->
-            {upgrade, protocol, cowboy_websocket};
+            websocket_init(Req, Config);
         _ ->
-            {Sid, _} = cowboy_req:qs_val(<<"sid">>, Req2),
-            {Transport, _} = cowboy_req:qs_val(<<"transport">>, Req2),
-            {JsonP, _} = cowboy_req:qs_val(<<"j">>, Req2),
-
+            KeyValues = cowboy_req:parse_qs(Req2),
+            Sid = proplists:get_value(<<"sid">>, KeyValues),
+            Transport = proplists:get_value(<<"transport">>, KeyValues),
+            JsonP = proplists:get_value(<<"j">>, KeyValues),
             case {Transport, Sid} of
                 {<<"polling">>, undefined} ->
-                    {ok, Req2, #http_state{action = create_session, config = Config, version = 1, jsonp = JsonP}};
+                    handle(Req2, #http_state{type = http, action = create_session, config = Config, version = 1, jsonp = JsonP}});
                 {<<"polling">>, _} when is_binary(Sid) ->
                     handle_polling(Req2, Sid, Config, 1, JsonP);
                 {<<"websocket">>, _} ->
-                    {upgrade, protocol, cowboy_websocket};
+                    websocket_init(Req, Config);
                 _ ->
-                    {ok, Req2, #http_state{config = Config}}
+                    handle(Req2, #http_state{type = http, config = Config}})
             end
     end.
 
@@ -71,7 +75,7 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
             Result = <<":", HeartbeatTimeoutBin/binary, ":", SessionTimeoutBin/binary, ":websocket,xhr-polling">>,
             Result2 = <<Sid/binary, Result/binary>>,
 
-            {ok, Req1} = cowboy_req:reply(200, text_headers(), <<Result2/binary>>, Req);
+            Req1 = cowboy_req:reply(200, text_headers(), <<Result2/binary>>, Req);
         1 ->
             Result = jiffy:encode({[
                 {<<"sid">>, Sid},
@@ -92,7 +96,7 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
                     HttpHeaders = javascript_headers()
             end,
 
-            {ok, Req1} = cowboy_req:reply(200, HttpHeaders, <<Result2/binary>>, Req)
+            Req1 = cowboy_req:reply(200, HttpHeaders, <<Result2/binary>>, Req)
     end,
     {ok, Req1, HttpState};
 
@@ -101,44 +105,44 @@ handle(Req, HttpState = #http_state{action = data, messages = Messages, config =
     {ok, Req1, HttpState};
 
 handle(Req, HttpState = #http_state{action = not_found}) ->
-    {ok, Req1} = cowboy_req:reply(404, [], <<>>, Req),
+    Req1 = cowboy_req:reply(404, [], <<>>, Req),
     {ok, Req1, HttpState};
 
 handle(Req, HttpState = #http_state{action = send}) ->
-    {ok, Req1} = cowboy_req:reply(200, [], <<>>, Req),
+    Req1 = cowboy_req:reply(200, [], <<>>, Req),
     {ok, Req1, HttpState};
 
 handle(Req, HttpState = #http_state{action = session_in_use}) ->
-    {ok, Req1} = cowboy_req:reply(404, [], <<>>, Req),
+    Req1 = cowboy_req:reply(404, [], <<>>, Req),
     {ok, Req1, HttpState};
 
 handle(Req, HttpState = #http_state{action = ok, version = 1}) ->
-    {ok, Req1} = cowboy_req:reply(200, text_headers(), <<"ok">>, Req),
+    Req1 = cowboy_req:reply(200, text_headers(), <<"ok">>, Req),
     {ok, Req1, HttpState};
 handle(Req, HttpState = #http_state{action = ok}) ->
-    {ok, Req1} = cowboy_req:reply(200, text_headers(), <<>>, Req),
+    Req1 = cowboy_req:reply(200, text_headers(), <<>>, Req),
     {ok, Req1, HttpState};
 
 handle(Req, HttpState) ->
-    {ok, Req1} = cowboy_req:reply(404, [], <<>>, Req),
+    Req1 = cowboy_req:reply(404, [], <<>>, Req),
     {ok, Req1, HttpState}.
 
-info({timeout, TRef, {?MODULE, Pid}}, Req, HttpState = #http_state{action = heartbeat, heartbeat_tref = TRef}) ->
+handle_info({timeout, TRef, {?MODULE, Pid}}, Req, HttpState = #http_state{action = heartbeat, heartbeat_tref = TRef}) ->
     safe_poll(Req, HttpState#http_state{heartbeat_tref = undefined}, Pid, false);
 
-info({message_arrived, Pid}, Req, HttpState = #http_state{action = heartbeat}) ->
+handle_info({message_arrived, Pid}, Req, HttpState = #http_state{action = heartbeat}) ->
     safe_poll(Req, HttpState, Pid, true);
 
-info(_Info, Req, HttpState) ->
+handle_info(_Info, Req, HttpState) ->
     {ok, Req, HttpState}.
 
-terminate(_Reason, _Req, _HttpState = #http_state{action = create_session}) ->
+terminate(_Reason, _Req, _HttpState = #http_state{type = http, action = create_session}) ->
     ok;
 
-terminate(_Reason, _Req, _HttpState = #http_state{action = session_in_use}) ->
+terminate(_Reason, _Req, _HttpState = #http_state{type = http, action = session_in_use}) ->
     ok;
 
-terminate(_Reason, _Req, _HttpState = #http_state{heartbeat_tref = HeartbeatTRef, pid = Pid}) ->
+terminate(_Reason, _Req, _HttpState = #http_state{type = http, heartbeat_tref = HeartbeatTRef, pid = Pid}) ->
     safe_unsub_caller(Pid, self()),
     case HeartbeatTRef of
         undefined ->
@@ -227,31 +231,31 @@ safe_poll(Req, HttpState = #http_state{config = Config, version = Version, jsonp
         end
     catch
         exit:{noproc, _} ->
-            {ok, RD} = cowboy_req:reply(404, [], <<>>, Req),
+            RD = cowboy_req:reply(404, [], <<>>, Req),
             {ok, RD, HttpState#http_state{action = disconnect}}
     end.
 
 handle_polling(Req, Sid, Config, Version, JsonP) ->
-    {Method, _} = cowboy_req:method(Req),
+    Method = cowboy_req:method(Req),
     case {socketio_session:find(Sid), Method} of
         {{ok, Pid}, <<"GET">>} ->
             case socketio_session:pull_no_wait(Pid, self()) of
                 {error, noproc} ->
-                    {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
+                    {ok, reply(400, <<"Can't upgrade">>, Req), #http_state{type = http, action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                 session_in_use ->
-                    {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
+                    {ok, reply(400, <<"Can't upgrade">>, Req), #http_state{type = http, action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                 [] when Version =:= 1 ->
                     case socketio_session:transport(Pid) of
                         websocket ->
-                            {ok, Req, #http_state{action = data, messages = [nop], config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}};
+                            {ok, Req, #http_state{type = http, action = data, messages = [nop], config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}};
                         _ ->
-                            {loop, Req, #http_state{action = heartbeat, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}, hibernate}
+                            {loop, Req, #http_state{type = http, action = heartbeat, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}, hibernate}
                     end;
                 [] when Version =:= 0 ->
                     HeartBeatTimer = erlang:send_after(Config#config.heartbeat, self(), {?MODULE, Pid}),
-                    {loop, Req, #http_state{action = heartbeat, heartbeat_tref = HeartBeatTimer, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}, hibernate};
+                    {loop, Req, #http_state{type = http, action = heartbeat, heartbeat_tref = HeartBeatTimer, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}, hibernate};
                 Messages ->
-                    {ok, Req, #http_state{action = data, messages = Messages, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}}
+                    {ok, Req, #http_state{type = http, action = data, messages = Messages, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}}
             end;
         {{ok, Pid}, <<"POST">>} ->
             case get_request_data(Req, JsonP) of
@@ -272,22 +276,22 @@ handle_polling(Req, Sid, Config, Version, JsonP) ->
                                end,
                     case socketio_session:recv(Pid, Messages) of
                         noproc ->
-                            {shutdown, Req2, #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
+                            {ok, reply(400, <<"Can't upgrade">>, Req2), #http_state{type = http, action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                         _ ->
-                            {ok, Req2, #http_state{action = ok, config = Config, sid = Sid, version = Version, jsonp = JsonP}}
+                            {ok, Req2, #http_state{type = http, action = ok, config = Config, sid = Sid, version = Version, jsonp = JsonP}}
                     end;
                 error ->
-                    {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}}
+                    {ok, reply(400, <<"Can't upgrade">>, Req), #http_state{type = http, action = error, config = Config, sid = Sid, version = Version}}
             end;
         {{error, not_found}, _} ->
-            {ok, Req, #http_state{action = not_found, sid = Sid, config = Config, version = Version, jsonp = JsonP}};
+            {ok, Req, #http_state{type = http, action = not_found, sid = Sid, config = Config, version = Version, jsonp = JsonP}};
         _ ->
-            {ok, Req, #http_state{action = error, sid = Sid, config = Config, version = Version, jsonp = JsonP}}
+            {ok, Req, #http_state{type = http, action = error, sid = Sid, config = Config, version = Version, jsonp = JsonP}}
     end.
 
 %% Websocket handlers
-websocket_init(_TransportName, Req, [Config]) ->
-    {PathInfo, _} = cowboy_req:path_info(Req),
+websocket_init(Req, [Config]) ->
+    PathInfo = cowboy_req:path_info(Req),
     case PathInfo of
         [<<"1">>, <<"websocket">>, Sid] ->
             case socketio_session:find(Sid) of
@@ -295,23 +299,24 @@ websocket_init(_TransportName, Req, [Config]) ->
                     erlang:monitor(process, Pid),
                     self() ! go,
                     erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
-                    {ok, Req, #websocket_state{config = Config, pid = Pid, messages = [], version = 0}, hibernate};
+                    {cowboy_websocket, Req, #websocket_state{type = websocket, config = Config, pid = Pid, messages = [], version = 0}, hibernate};
                 {error, not_found} ->
-                    {shutdown, Req}
+                    {ok, reply(500, <<"No such session">>, Req)}
             end;
         _ ->
-            case cowboy_req:qs_val(<<"sid">>, Req) of
-                {Sid, _} when is_binary(Sid) ->
+            KeyValues = cowboy_req:parse_qs(Req),
+            case proplists:get_value(<<"sid">>, KeyValues, undefined) of
+                Sid when is_binary(Sid) ->
                     case socketio_session:find(Sid) of
                         {ok, Pid} ->
                             erlang:monitor(process, Pid),
                             socketio_session:upgrade_transport(Pid, websocket),
-                            {ok, Req, #websocket_state{config = Config, pid = Pid, messages = [], version = 1}, hibernate};
+                            {cowboy_websocket, Req, #websocket_state{type = websocket, config = Config, pid = Pid, messages = [], version = 1}, hibernate};
                         {error, not_found} ->
-                            {shutdown, Req}
+                            {ok, reply(500, <<"No such session">>, Req)}
                     end;
                 _ ->
-                    {shutdown, Req}
+                    {ok, reply(500, <<"No such session">>, Req)}
             end
     end.
 
@@ -396,15 +401,15 @@ websocket_info({'DOWN', _Ref, process, Pid, _Reason}, Req, State = #websocket_st
 websocket_info(_Info, Req, State) ->
     {ok, Req, State, hibernate}.
 
-websocket_terminate(_Reason, _Req, #websocket_state{pid = Pid}) ->
+terminate(_Reason, _Req, #websocket_state{type = websocket, pid = Pid}) ->
     socketio_session:disconnect(Pid),
     ok.
 
 enable_cors(Req) ->
     case cowboy_req:header(<<"origin">>, Req) of
-        {undefined, _} ->
+        undefined ->
             Req;
-        {Origin, _} ->
+        Origin ->
             Req1 = cowboy_req:set_resp_header(<<"access-control-allow-origin">>, Origin, Req),
             cowboy_req:set_resp_header(<<"access-control-allow-credentials">>, <<"true">>, Req1)
     end.
