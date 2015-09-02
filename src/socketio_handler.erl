@@ -30,7 +30,6 @@
 init(Req, [Config]) ->
     Req2 = enable_cors(Req),
     PathInfo = cowboy_req:path_info(Req2),
-    ?DBGPRINT(PathInfo),
     case PathInfo of
         [<<"1">>] ->
             handle(Req2, #http_state{action = create_session, config = Config, version = 0});
@@ -303,7 +302,7 @@ handle_polling(Req, Sid, Config, Version, JsonP) ->
     end.
 
 %% Websocket handlers
-websocket_init(PathInfo, Req, [Config]) ->
+websocket_init(PathInfo, Req, Config) ->
     ?DBGPRINT(PathInfo),
     case PathInfo of
         [<<"1">>, <<"websocket">>, Sid] ->
