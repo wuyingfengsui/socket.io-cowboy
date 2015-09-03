@@ -142,7 +142,7 @@ init([SessionId, SessionTimeout, Callback, Opts, PeerAddress]) ->
         opts = Opts,
         session_timeout_tref = TRef,
         session_timeout = SessionTimeout,
-        peer_address = PeerAddress, 
+        peer_address = PeerAddress,
         transport = polling
     }, hibernate}.
 

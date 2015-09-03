@@ -9,7 +9,7 @@ This fork will switch to Cowboy 2.0.
 
 Licensed under the Apache License 2.0.
 
-### Feauters
+### Features
 
 * Supports 0.7+ version of [Socket.IO-client](https://github.com/Automattic/socket.io-client) up to latest - 1.3.5
 * Supports polling(jsonp & xhr) transport
@@ -18,7 +18,7 @@ Licensed under the Apache License 2.0.
 
 #Usage example
 
-The example you can find in demo directory. Just make and execute start.sh script. Url to check: 
+The example you can find in demo directory. Just make and execute start.sh script. Url to check:
 
 Socket.IO V0.x is [here](http://localhost:8080/index.html)
 

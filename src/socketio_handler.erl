@@ -20,16 +20,14 @@
          info/3,
          websocket_handle/3, websocket_info/3]).
 
-% 'type' is always http for http_state, and 'websocket' for websocket_state.
-%
-% We need it only to distinguish which type of record (since it's just a tuple
-% at runtime) we are getting in the 'terminate' call.
--record(http_state, {type = http, action, config, sid, heartbeat_tref, messages, pid, version, jsonp, loop = false}).
--record(websocket_state, {type = websocket, config, pid, messages, version}).
+-record(http_state, {action, config, sid, heartbeat_tref, messages, pid, version, jsonp, loop = false}).
+-record(websocket_state, {config, pid, messages, version}).
 
 init(Req, [Config]) ->
     Req2 = enable_cors(Req),
+    ?DBGPRINT(Req2),
     PathInfo = cowboy_req:path_info(Req2),
+    ?DBGPRINT(PathInfo),
     case PathInfo of
         [<<"1">>] ->
             handle(Req2, #http_state{action = create_session, config = Config, version = 0});
@@ -80,7 +78,7 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
             Result = jiffy:encode({[
                 {<<"sid">>, Sid},
                 {<<"pingInterval">>, HeartbeatInterval}, {<<"pingTimeout">>, HeartbeatTimeout},
-                {<<"upgrades">>, [<<"websocket">>]}
+                {<<"upgrades">>, []}  %[<<"websocket">>]}
             ]}),
 
             case JsonP of
@@ -136,11 +134,11 @@ info({message_arrived, Pid}, Req, HttpState = #http_state{action = heartbeat}) -
 info(_Info, Req, HttpState) ->
     {ok, Req, HttpState}.
 
-terminate(_Reason, _Req, _HttpState = #http_state{type = http, action = create_session}) ->
+terminate(_Reason, _Req, _HttpState = #http_state{action = create_session}) ->
     ok;
-terminate(_Reason, _Req, _HttpState = #http_state{type = http, action = session_in_use}) ->
+terminate(_Reason, _Req, _HttpState = #http_state{action = session_in_use}) ->
     ok;
-terminate(_Reason, _Req, _HttpState = #http_state{type = http, heartbeat_tref = HeartbeatTRef, pid = Pid}) ->
+terminate(_Reason, _Req, _HttpState = #http_state{heartbeat_tref = HeartbeatTRef, pid = Pid}) ->
     safe_unsub_caller(Pid, self()),
     case HeartbeatTRef of
         undefined ->
@@ -148,7 +146,7 @@ terminate(_Reason, _Req, _HttpState = #http_state{type = http, heartbeat_tref = 
         _ ->
             erlang:cancel_timer(HeartbeatTRef)
     end;
-terminate(_Reason, _Req, #websocket_state{type = websocket, pid = Pid}) ->
+terminate(_Reason, _Req, #websocket_state{pid = Pid}) ->
     socketio_session:disconnect(Pid),
     ok.
 
@@ -241,9 +239,10 @@ safe_poll(Req, HttpState = #http_state{config = Config, version = Version, jsonp
 % Used to decide whether to return 'ok' or 'stop' as the first entry in the
 % return tuple, when a response has been sent. If we're a loop handler, we're
 % supposed to return 'stop' after a response was sent.
-ok_or_stop(_HttpState = #http_state{loop = Loop}) ->
+ok_or_stop(HttpState = #http_state{loop = Loop}) ->
+    ?DBGPRINT(HttpState),
     case Loop of
-        true -> stop;
+        true -> ok; %stop;
         _ -> ok
     end.
 
@@ -303,7 +302,6 @@ handle_polling(Req, Sid, Config, Version, JsonP) ->
 
 %% Websocket handlers
 websocket_init(PathInfo, Req, Config) ->
-    ?DBGPRINT(PathInfo),
     case PathInfo of
         [<<"1">>, <<"websocket">>, Sid] ->
             case socketio_session:find(Sid) of
