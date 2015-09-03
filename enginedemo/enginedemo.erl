@@ -14,8 +14,7 @@ start() ->
             {"/engine.io/[...]", socketio_handler, [socketio_session:configure([{heartbeat, 25000},
                 {heartbeat_timeout, 60000},
                 {session_timeout, 60000},
-                {callback, ?MODULE},
-                {protocol, socketio_data_protocol}])]
+                {callback, ?MODULE}])]
             },
             {"/[...]", cowboy_static, {dir, <<"./priv">>, [{mimetypes, cow_mimetypes, web}]}}
         ]}

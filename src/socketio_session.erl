@@ -50,7 +50,6 @@ configure(Opts) ->
             heartbeat_timeout = proplists:get_value(heartbeat_timeout, Opts, 30000),
             session_timeout = proplists:get_value(session_timeout, Opts, 30000),
             callback = proplists:get_value(callback, Opts),
-            protocol = proplists:get_value(protocol, Opts, socketio_data_protocol),
             opts = proplists:get_value(opts, Opts, undefined)
            }.
 
