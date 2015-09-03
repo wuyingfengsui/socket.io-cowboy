@@ -274,11 +274,11 @@ websocket_handle({text, Data}, Req, State = #websocket_state{ pid = Pid }) ->
     case catch (socketio_data_protocol:decode_v1_for_websocket(Data)) of
         {'EXIT', _Reason} ->
             {ok, Req, State};
-        [{ping, Rest}] ->               %% only for socketio v1
+        [{ping, Rest}] ->
             Packet = socketio_data_protocol:encode_v1({pong, Rest}),
             socketio_session:refresh(Pid),
             {reply, {text, Packet}, Req, State};
-        [upgrade] ->                    %% only for socketio v1
+        [upgrade] ->
             self() ! go,
             {ok, Req, State};
         Msgs ->
