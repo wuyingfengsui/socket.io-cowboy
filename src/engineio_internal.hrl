@@ -12,25 +12,13 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
--module(socketio_sup).
--author('Kirill Trofimov <sinnus@gmail.com>').
--behaviour(supervisor).
+-record(config, {heartbeat,
+                 heartbeat_timeout,
+                 session_timeout,
+                 callback,
+                 opts
+                }).
 
--export([start_link/0]).
--export([init/1]).
-
--define(SUPERVISOR, ?MODULE).
-
--spec start_link() -> {ok, Pid::pid()}.
-start_link() ->
-	supervisor:start_link({local, ?SUPERVISOR}, ?MODULE, []).
-
-init([]) ->
-	{ok, {{one_for_one, 10, 10},
-          [
-           {uuids, {uuids, start, []},
-            permanent, 5000, worker, [uuids]},
-
-           {socketio_session_sup, {socketio_session_sup, start_link, []},
-            permanent, 5000, supervisor, [socketio_session_sup]}
-          ]}}.
+% Debugging aid. Never leave these in the code when checking in.
+% -define(DBGPRINT(Var), io:format("DEBUG: ~p:~p - ~p~n~n ~p~n~n", [?MODULE, ?LINE, ??Var, Var])).
+-define(DBGPRINT(Var), ok).

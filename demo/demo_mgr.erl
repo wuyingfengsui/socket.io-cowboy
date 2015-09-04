@@ -27,8 +27,8 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
-publish_to_all(Json) ->
-    gen_server:call(?SERVER, {publish_to_all, Json}).
+publish_to_all(MessageBin) ->
+    gen_server:call(?SERVER, {publish_to_all, MessageBin}).
 
 emit_to_all(EventName, ArgsList) ->
     gen_server:call(?SERVER, {emit_to_all, EventName, ArgsList}).
@@ -72,32 +72,17 @@ init([]) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_call({add_session, Pid}, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State#state{sessions = sets:add_element(Pid, State#state.sessions)}};
-
+    {reply, ok, State#state{sessions = sets:add_element(Pid, State#state.sessions)}};
 handle_call({remove_session, Pid}, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State#state{sessions = sets:del_element(Pid, State#state.sessions)}};
-
-handle_call({publish_to_all, Json}, _From, State) ->
-    Reply = ok,
+    {reply, ok, State#state{sessions = sets:del_element(Pid, State#state.sessions)}};
+handle_call({publish_to_all, MessageBin}, _From, State) ->
     sets:fold(fun(Pid, AccIn) ->
-                      socketio_session:send_obj(Pid, Json),
+                      engineio_session:send_message(Pid, MessageBin),
                       AccIn
               end, notused, State#state.sessions),
-    {reply, Reply, State};
-
-handle_call({emit_to_all, EventName, ArgsList}, _From, State) ->
-    Reply = ok,
-    sets:fold(fun(Pid, AccIn) ->
-        socketio_session:emit(Pid, EventName, ArgsList),
-        AccIn
-    end, notused, State#state.sessions),
-    {reply, Reply, State};
-
+    {reply, ok, State};
 handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
+    {reply, ok, State}.
 
 %%--------------------------------------------------------------------
 %% @private

@@ -1,8 +1,11 @@
--module(socketio_data_protocol).
+-module(engineio_data_protocol).
 -compile([{no_auto_import, [error/2]}]).
+-include("engineio_internal.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 %% The source code was taken and modified from https://github.com/yrashk/socket.io-erlang/blob/master/src/socketio_data_v1.erl
+
+% TODO(joi): Remove older protocol implementation (just keep _v1).
 
 -export([encode/1,encode_v1/1,decode/1,decode_v1/1, decode_v1_for_websocket/1]).
 
@@ -41,27 +44,8 @@ encode_v1(disconnect) ->
     <<"41">>;
 encode_v1({pong, Data}) ->
     <<"3", Data/binary>>;
-encode_v1({message, _Id, _EndPoint, Message}) ->
+encode_v1({message, Message}) ->
     <<"4", Message/binary>>;
-encode_v1({connect, _Endpoint}) ->
-    <<"40">>;
-encode_v1({event, Id, _EndPoint, EventName, undefined}) ->
-    IdBin = make_sure_binary(Id),
-    EventNameBin = make_sure_binary(EventName),
-    EventBin = jiffy:encode([EventNameBin]),
-    <<"42", IdBin/binary, EventBin/binary>>;
-encode_v1({event, Id, _EndPoint, EventName, EventArgs}) when is_list(EventArgs) ->
-    IdBin = make_sure_binary(Id),
-    EventNameBin = make_sure_binary(EventName),
-    EventBin = jiffy:encode([EventNameBin, {EventArgs}]),
-    <<"42", IdBin/binary, EventBin/binary>>;
-encode_v1({event, Id, EndPoint, EventName, EventArgs}) ->
-    encode_v1({event, Id, EndPoint, EventName, [EventArgs]});
-encode_v1({ack, Id}) when is_integer(Id) ->
-    IdBin = make_sure_binary(Id),
-    <<"43", IdBin/binary, "[]">>;
-encode_v1({ack, IdBin}) when IdBin =/= <<>> ->
-    <<"43", IdBin/binary, "[]">>;
 encode_v1(nop) ->
     <<"6">>.
 
@@ -233,24 +217,8 @@ decode_packet_v1(<<"1">>) -> disconnect;
 decode_packet_v1(<<"2", Rest/binary>>) ->
     {ping, Rest};
 decode_packet_v1(<<"4", Rest/binary>>) ->
-    decode_message_v1(Rest);
+    {message, Rest};
 decode_packet_v1(<<"5">>) -> upgrade.
-
-decode_message_v1(<<"1">>) -> disconnect;
-decode_message_v1(<<"2", Rest/binary>>) ->
-    case binary:split(Rest, <<"[">>) of
-        [<<>>, Msg] ->
-             case jiffy:decode(<<"[", Msg/binary>>)of
-                 [EventName, {EventArgs}] ->
-                     {event, <<>>, <<>>, EventName, EventArgs};
-                 [EventName] ->
-                     {event, <<>>, <<>>, EventName, undefined}
-             end;
-        [Id, Msg] ->
-            Id2 = binary_to_integer(Id),
-            [EventName, {EventArgs}] = jiffy:decode(<<"[", Msg/binary>>),
-            {event, Id2, <<>>, EventName, EventArgs}
-    end.
 
 parse_polling_body_for_v1(Body) ->
     parse_polling_body_for_v1(Body, []).
@@ -316,7 +284,7 @@ message_test_() ->
         ?_assertEqual(<<"3:::bla">>, message(<<"">>, <<"">>, <<"bla">>)),
         ?_assertEqual(<<"3:4+:b:bla">>, message(<<"4+">>, <<"b">>, <<"bla">>)),
         ?_assertEqual(<<"3::/test:bla">>, message(<<"">>, <<"/test">>, <<"bla">>)),
-        ?_assertEqual(<<"4test">>, encode_v1({message, <<>>, <<>>, <<"test">>}))].
+        ?_assertEqual(<<"4test">>, encode_v1({message, <<"test">>}))].
 
 json_test_() ->
     [?_assertEqual(<<"4:1::{\"a\":\"b\"}">>,
@@ -354,8 +322,7 @@ d_message_test_() ->
         ?_assertEqual({message, 2, <<>>, <<"bla">>}, decode_packet(message(2, <<"">>, <<"bla">>))),
         ?_assertEqual({message, <<"">>, <<>>, <<"bla">>}, decode_packet(message(<<"">>, <<"">>, <<"bla">>))),
         ?_assertEqual({message, "4+", <<"b">>, <<"bla">>}, decode_packet(message(<<"4+">>, <<"b">>, <<"bla">>))),
-        ?_assertEqual({message, <<"">>, <<"/test">>, <<"bla">>}, decode_packet(message(<<"">>, <<"/test">>, <<"bla">>))),
-        ?_assertEqual({event, 1234, <<>>, <<"test">>, [{<<"a">>, <<"b">>}]}, decode_packet_v1(<<"421234[\"test\",{\"a\":\"b\"}]">>))].
+        ?_assertEqual({message, <<"">>, <<"/test">>, <<"bla">>}, decode_packet(message(<<"">>, <<"/test">>, <<"bla">>)))].
 
 d_json_test_() ->
     [?_assertEqual({json, 1, <<>>, [{<<"a">>,<<"b">>}]},
@@ -421,4 +388,16 @@ encode_frame_test_() ->
         ?FRAME/utf8, "8", ?FRAME/utf8, "4:::\"ZX\"">>,
             encode([{message, <<>>, <<>>, <<"Привет">>},
                 {json, <<>>, <<>>, <<"ZX">>}]))
+    ].
+
+decode_v1_regression_test_() ->
+    [
+        ?_assertEqual([{message, <<"{\"userName\":\"user485\",\"message\":\"styx\"}">>}],
+                      decode_v1(<<"40:4{\"userName\":\"user485\",\"message\":\"styx\"}">>))
+    ].
+
+encode_v1_regression_test_() ->
+    [
+        ?_assertEqual([<<"4{\"userName\":\"user847\",\"message\":\"hello\"}">>],
+                      encode_v1([{message,<<"{\"userName\":\"user847\",\"message\":\"hello\"}">>}]))
     ].

@@ -6,16 +6,15 @@
 
 start() ->
     ok = mnesia:start(),
-    ok = socketio_session:init_mnesia(),
-    ok = socketio:start(),
+    ok = engineio_session:init_mnesia(),
+    ok = engineio:start(),
 
     Dispatch = cowboy_router:compile([
         {'_', [
-            {"/socket.io/[...]", socketio_handler, [socketio_session:configure([{heartbeat, 25000},
+            {"/engine.io/[...]", engineio_handler, [engineio_session:configure([{heartbeat, 25000},
                 {heartbeat_timeout, 60000},
                 {session_timeout, 60000},
-                {callback, ?MODULE},
-                {protocol, socketio_data_protocol}])]
+                {callback, ?MODULE}])]
             },
             {"/[...]", cowboy_static, {dir, <<"./priv">>, [{mimetypes, cow_mimetypes, web}]}}
         ]}
@@ -23,7 +22,7 @@ start() ->
 
     demo_mgr:start_link(),
 
-    cowboy:start_http(socketio_http_listener, 100, [{host, "127.0.0.1"},
+    cowboy:start_http(engineio_http_listener, 100, [{host, "127.0.0.1"},
         {port, 8080}], [{env, [{dispatch, Dispatch}]}]).
 
 %% ---- Handlers
@@ -32,22 +31,9 @@ open(Pid, Sid, _Opts, _PeerAddress) ->
     demo_mgr:add_session(Pid),
     {ok, #session_state{}}.
 
-recv(_Pid, _Sid, {json, <<>>, Json}, SessionState = #session_state{}) ->
-    error_logger:info_msg("recv json ~p~n", [Json]),
-    demo_mgr:publish_to_all(Json),
-    {ok, SessionState};
-
-recv(Pid, _Sid, {message, <<>>, Message}, SessionState = #session_state{}) ->
-    socketio_session:send_message(Pid, Message),
-    {ok, SessionState};
-
-recv(_Pid, _Sid, {event, _EndPoint, EventName, ArgsList}, SessionState = #session_state{}) ->
-    error_logger:info_msg("recv event~nname: ~p~nargs: ~p~n", [EventName, ArgsList]),
-    demo_mgr:emit_to_all(EventName, ArgsList),
-    {ok, SessionState};
-
-recv(Pid, Sid, Message, SessionState = #session_state{}) ->
-    error_logger:info_msg("recv ~p ~p ~p~n", [Pid, Sid, Message]),
+recv(Pid, Sid, {message, Message}, SessionState) ->
+    %error_logger:info_msg("recv first ~p ~p ~p~n", [Pid, Sid, Message]),
+    demo_mgr:publish_to_all(Message),
     {ok, SessionState}.
 
 handle_info(_Pid, _Sid, _Info, SessionState = #session_state{}) ->

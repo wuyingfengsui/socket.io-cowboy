@@ -1,2 +1,6 @@
 #!/bin/sh
-erl -sname demo -pa ebin -pa ../ebin ../deps/*/ebin -eval "demo:start()."
+pushd ..
+make
+popd
+make
+erl -name demo@127.0.0.1 -setcookie demo -pa ebin -pa ../ebin ../deps/*/ebin -eval "demo:start()."

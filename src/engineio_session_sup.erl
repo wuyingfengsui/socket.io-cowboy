@@ -12,7 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
--module(socketio_session_sup).
+-module(engineio_session_sup).
 -author('Kirill Trofimov <sinnus@gmail.com>').
 -behaviour(supervisor).
 
@@ -27,8 +27,8 @@ start_link() ->
 
 init([]) ->
     {ok, {{simple_one_for_one, 10, 10},
-          [{undefined, {socketio_session, start_link, []},
-            temporary, 5000, worker, [socketio_session]}]}}.
+          [{undefined, {engineio_session, start_link, []},
+            temporary, 5000, worker, [engineio_session]}]}}.
 
 start_child(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
    supervisor:start_child(?MODULE, [SessionId, SessionTimeout, Callback, Opts, PeerAddress]).

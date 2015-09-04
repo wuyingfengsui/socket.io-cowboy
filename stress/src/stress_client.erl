@@ -93,7 +93,7 @@ polling_result_ready(go, State = #state{sid = Sid, body = "1::", connected = fal
 
 polling_result_ready(go, State = #state{sid = Sid, body = Body, send_packets = PrevPackets, connected = true, start_poll_ts = StartPollTS}) ->
     log_polling_req(Sid, StartPollTS, erlang:now()),
-    Packets = socketio_data_protocol:decode(list_to_binary(Body)),
+    Packets = engineio_data_protocol:decode(list_to_binary(Body)),
     case Packets of
         PrevPackets ->
             send_test_packets(State);
@@ -158,7 +158,7 @@ get_test_packets() ->
 
 send_test_packets(State = #state{transport_url = TransportUrl}) ->
     SendPackets = get_test_packets(),
-    PacketsBin = socketio_data_protocol:encode(SendPackets),
+    PacketsBin = engineio_data_protocol:encode(SendPackets),
 
     Headers = [{"Content-Type", "text/plain; charset=utf-8"},
                {"Connection", "keep-alive"},

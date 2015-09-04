@@ -12,21 +12,23 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
--module(socketio_session).
+-module(engineio_session).
 -author('Kirill Trofimov <sinnus@gmail.com>').
+-author('wuyingfengsui@gmail.com').
+-author('Jói Sigurdsson <joi@crankwheel.com>').
 -behaviour(gen_server).
 
--include("socketio_internal.hrl").
+-include("engineio_internal.hrl").
 
 %% API
--export([start_link/5, init_mnesia/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, safe_poll/1, send/2, recv/2,
-         send_message/2, send_obj/2, emit/3, refresh/1, disconnect/1, unsub_caller/2, upgrade_transport/2, transport/1]).
+-export([start_link/5, init_mnesia/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, safe_poll/1, recv/2,
+         send_message/2, refresh/1, disconnect/1, unsub_caller/2, upgrade_transport/2, transport/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--define(SESSION_PID_TABLE, socketio_session_to_pid).
+-define(SESSION_PID_TABLE, engineio_session_to_pid).
 
 -record(?SESSION_PID_TABLE, {sid, pid}).
 
@@ -50,7 +52,6 @@ configure(Opts) ->
             heartbeat_timeout = proplists:get_value(heartbeat_timeout, Opts, 30000),
             session_timeout = proplists:get_value(session_timeout, Opts, 30000),
             callback = proplists:get_value(callback, Opts),
-            protocol = proplists:get_value(protocol, Opts, socketio_data_protocol),
             opts = proplists:get_value(opts, Opts, undefined)
            }.
 
@@ -60,7 +61,7 @@ init_mnesia() ->
         ram_copies).
 
 create(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
-    {ok, Pid} = socketio_session_sup:start_child(SessionId, SessionTimeout, Callback, Opts, PeerAddress),
+    {ok, Pid} = engineio_session_sup:start_child(SessionId, SessionTimeout, Callback, Opts, PeerAddress),
     Pid.
 
 find(SessionId) ->
@@ -92,13 +93,7 @@ send(Pid, Message) ->
     gen_server:cast(Pid, {send, Message}).
 
 send_message(Pid, Message) when is_binary(Message) ->
-    gen_server:cast(Pid, {send, {message, <<>>, <<>>, Message}}).
-
-send_obj(Pid, Obj) ->
-    gen_server:cast(Pid, {send, {json, <<>>, <<>>, Obj}}).
-
-emit(Pid, EventName, EventArgs) ->
-    gen_server:cast(Pid, {send, {event, <<>>, <<>>, EventName, EventArgs}}).
+    gen_server:cast(Pid, {send, {message, Message}}).
 
 recv(Pid, Messages) when is_list(Messages) ->
     case safe_call(Pid, {recv, Messages}, infinity) of
@@ -132,9 +127,11 @@ start_link(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
 
 %%--------------------------------------------------------------------
 init([SessionId, SessionTimeout, Callback, Opts, PeerAddress]) ->
+    ?DBGPRINT({SessionId, SessionTimeout, Callback, Opts, PeerAddress}),
+    % TODO(joi): Shouldn't this be finished before returning?
     self() ! register_in_ets,
     TRef = erlang:send_after(SessionTimeout, self(), session_timeout),
-    {ok, #state{
+    State = #state{
         id = SessionId,
         messages = [],
         registered = false,
@@ -142,16 +139,17 @@ init([SessionId, SessionTimeout, Callback, Opts, PeerAddress]) ->
         opts = Opts,
         session_timeout_tref = TRef,
         session_timeout = SessionTimeout,
-        peer_address = PeerAddress, 
+        peer_address = PeerAddress,
         transport = polling
-    }, hibernate}.
+    },
+    {ok, State}.
 
 %%--------------------------------------------------------------------
 handle_call({pull, Pid, Wait}, _From,  State = #state{messages = Messages, caller = undefined}) ->
     State1 = refresh_session_timeout(State),
     case Messages of
         [] ->
-            {reply, [], State1#state{caller = Pid}, hibernate};
+            {reply, [], State1#state{caller = Pid}};
         _ ->
             NewCaller = case Wait of
                             true ->
@@ -159,31 +157,32 @@ handle_call({pull, Pid, Wait}, _From,  State = #state{messages = Messages, calle
                             false ->
                                 undefined
                         end,
-            {reply, lists:reverse(Messages), State1#state{messages = [], caller = NewCaller}, hibernate}
+            {reply, lists:reverse(Messages), State1#state{messages = [], caller = NewCaller}}
     end;
 
 handle_call({pull, _Pid, _}, _From,  State) ->
-    {reply, session_in_use, State, hibernate};
+    ?DBGPRINT(State),
+    {reply, session_in_use, State};
 
 handle_call({poll}, _From, State = #state{messages = [], transport = polling}) ->
-    {reply, [], State, hibernate};
+    {reply, [], State};
 handle_call({poll}, _From, State = #state{messages = Messages}) ->
     State1 = refresh_session_timeout(State),
-    {reply, lists:reverse(Messages), State1#state{messages = [], caller = undefined}, hibernate};
+    {reply, lists:reverse(Messages), State1#state{messages = [], caller = undefined}};
 
 handle_call({recv, Messages}, _From, State) ->
     State1 = refresh_session_timeout(State),
     process_messages(Messages, State1);
 
 handle_call({unsub_caller, _Caller}, _From, State = #state{caller = undefined}) ->
-    {reply, ok, State, hibernate};
+    {reply, ok, State};
 
 handle_call({unsub_caller, Caller}, _From, State = #state{caller = PrevCaller}) ->
     case Caller of
         PrevCaller ->
-            {reply, ok, State#state{caller = undefined}, hibernate};
+            {reply, ok, State#state{caller = undefined}};
         _ ->
-            {reply, ok, State, hibernate}
+            {reply, ok, State}
     end;
 
 handle_call({transport, websocket}, _From, State = #state{transport = polling, caller = Caller}) ->
@@ -193,16 +192,16 @@ handle_call({transport, websocket}, _From, State = #state{transport = polling, c
         _ ->
             send(self(), nop)
     end,
-    {reply, ok, State#state{transport = websocket}, hibernate};
+    {reply, ok, State#state{transport = websocket}};
 handle_call({transport, Transport}, _From, State) ->
-    {reply, ok, State#state{transport = Transport}, hibernate};
+    {reply, ok, State#state{transport = Transport}};
 
 handle_call({transport}, _From, State = #state{transport = Transport}) ->
-    {reply, Transport, State, hibernate};
+    {reply, Transport, State};
 
 handle_call(_Request, _From, State) ->
     Reply = ok,
-    {reply, Reply, State, hibernate}.
+    {reply, Reply, State}.
 %%--------------------------------------------------------------------
 handle_cast({send, Message}, State = #state{messages = Messages, caller = Caller}) ->
     case Caller of
@@ -211,17 +210,18 @@ handle_cast({send, Message}, State = #state{messages = Messages, caller = Caller
         _ ->
             Caller ! {message_arrived, self()}
     end,
-    {noreply, State#state{messages = [Message|Messages]}, hibernate};
+    ?DBGPRINT({send, Message}),
+    {noreply, State#state{messages = [Message|Messages]}};
 
 handle_cast({refresh}, State) ->
-    {noreply, refresh_session_timeout(State), hibernate};
+    {noreply, refresh_session_timeout(State)};
 
 handle_cast({disconnect}, State) ->
     {stop, normal, State};
 
 handle_cast(_Msg, State) ->
-    {noreply, State, hibernate}.
-%%--------------------------------------------------------------------
+    {noreply, State}.
+
 handle_info(session_timeout, State) ->
     {stop, normal, State};
 
@@ -229,10 +229,9 @@ handle_info(register_in_ets,
     State = #state{id = SessionId, registered = false, callback = Callback, opts = Opts, peer_address = PeerAddress}) ->
     case mnesia:dirty_write(#?SESSION_PID_TABLE{sid = SessionId, pid = self()}) of
         ok ->
-            send(self(), {connect, <<>>}),
             case Callback:open(self(), SessionId, Opts, PeerAddress) of
                 {ok, SessionState} ->
-                    {noreply, State#state{registered = true, session_state = SessionState}, hibernate};
+                    {noreply, State#state{registered = true, session_state = SessionState}};
                 disconnect ->
                     {stop, normal, State}
             end;
@@ -243,14 +242,14 @@ handle_info(register_in_ets,
 handle_info(Info, State = #state{id = Id, registered = true, callback = Callback, session_state = SessionState}) ->
     case Callback:handle_info(self(), Id, Info, SessionState) of
         {ok, NewSessionState} ->
-            {noreply, State#state{session_state = NewSessionState}, hibernate};
+            {noreply, State#state{session_state = NewSessionState}};
         {disconnect, NewSessionState} ->
             {stop, normal, State#state{session_state = NewSessionState}}
     end;
 
 handle_info(_Info, State) ->
-    {noreply, State, hibernate}.
-%%--------------------------------------------------------------------
+    {noreply, State}.
+
 terminate(_Reason, _State = #state{id = SessionId, registered = Registered, callback = Callback, session_state = SessionState}) ->
     mnesia:dirty_delete(?SESSION_PID_TABLE, SessionId),
     case Registered of
@@ -259,8 +258,7 @@ terminate(_Reason, _State = #state{id = SessionId, registered = Registered, call
             ok;
         _ ->
             ok
-    end,
-    ok.
+    end.
 
 %%--------------------------------------------------------------------
 code_change(_OldVsn, State, _Extra) ->
@@ -275,53 +273,26 @@ refresh_session_timeout(State = #state{session_timeout = Timeout, session_timeou
     State#state{session_timeout_tref = NewTRef}.
 
 process_messages([], _State) ->
-    {reply, ok, _State, hibernate};
+    {reply, ok, _State};
 
 process_messages([Message|Rest], State = #state{id = SessionId, callback = Callback, session_state = SessionState}) ->
     case Message of
-        {disconnect, _EndPoint} ->
-            {stop, normal, ok, State};
-        {connect, _EndPoint} ->
-            process_messages(Rest, State);
         disconnect ->
             {stop, normal, ok, State};
-        heartbeat ->
-            process_messages(Rest, State);
-        {ping, Data} ->                    %% only for socketio v1
+        {ping, Data} ->
             send(self(), {pong, Data}),
             process_messages(Rest, State);
-        {message, <<>>, EndPoint, Obj} ->
-            case Callback:recv(self(), SessionId, {message, EndPoint, Obj}, SessionState) of
+        {message, MessageBin} ->
+            case Callback:recv(self(), SessionId, {message, MessageBin}, SessionState) of
                 {ok, NewSessionState} ->
                     process_messages(Rest, State#state{session_state = NewSessionState});
                 {disconnect, NewSessionState} ->
                     {stop, normal, ok, State#state{session_state = NewSessionState}}
             end;
-        {json, <<>>, EndPoint, Obj} ->
-            case Callback:recv(self(), SessionId, {json, EndPoint, Obj}, SessionState) of
-                {ok, NewSessionState} ->
-                    process_messages(Rest, State#state{session_state = NewSessionState});
-                {disconnect, NewSessionState} ->
-                    {stop, normal, ok, State#state{session_state = NewSessionState}}
-            end;
-        {event, Id, EndPoint, EventName, EventArgs} when is_integer(Id) ->
-            send(self(), {ack, Id}),
-            process_event(EndPoint, EventName, EventArgs, Rest, State);
-        {event, _, EndPoint, EventName, EventArgs} ->
-            process_event(EndPoint, EventName, EventArgs, Rest, State);
-        {ack, _Id} ->
-            process_messages(Rest, State);
         _ ->
             %% Skip message
+            ?DBGPRINT({skip_message, Message, Rest, State}),
             process_messages(Rest, State)
-    end.
-
-process_event(EndPoint, EventName, EventArgs, RestEvent, State = #state{id = SessionId, callback = Callback, session_state = SessionState}) ->
-    case Callback:recv(self(), SessionId, {event, EndPoint, EventName, EventArgs}, SessionState) of
-        {ok, NewSessionState} ->
-            process_messages(RestEvent, State#state{session_state = NewSessionState});
-        {disconnect, NewSessionState} ->
-            {stop, normal, ok, State#state{session_state = NewSessionState}}
     end.
 
 is_pid_alive(Pid) when node(Pid) =:= node() ->

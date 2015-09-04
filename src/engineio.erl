@@ -12,7 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
--module(socketio).
+-module(engineio).
 -author('Kirill Trofimov <sinnus@gmail.com>').
 -behaviour(application).
 -export([start/0, start/2, stop/1, stop/0]).
@@ -28,10 +28,10 @@ start() ->
 
     ok = mnesia:start(),
 
-    application:start(socketio).
+    application:start(engineio).
 
 start(_Type, _Args) ->
-    socketio_sup:start_link().
+    engineio_sup:start_link().
 
 stop(_State) ->
     ok.

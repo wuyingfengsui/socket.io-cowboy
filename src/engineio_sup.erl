@@ -12,10 +12,25 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
--record(config, {heartbeat,
-                 heartbeat_timeout,
-                 session_timeout,
-                 callback,
-                 protocol,
-                 opts
-                }).
+-module(engineio_sup).
+-author('Kirill Trofimov <sinnus@gmail.com>').
+-behaviour(supervisor).
+
+-export([start_link/0]).
+-export([init/1]).
+
+-define(SUPERVISOR, ?MODULE).
+
+-spec start_link() -> {ok, Pid::pid()}.
+start_link() ->
+	supervisor:start_link({local, ?SUPERVISOR}, ?MODULE, []).
+
+init([]) ->
+	{ok, {{one_for_one, 10, 10},
+          [
+           {uuids, {uuids, start, []},
+            permanent, 5000, worker, [uuids]},
+
+           {engineio_session_sup, {engineio_session_sup, start_link, []},
+            permanent, 5000, supervisor, [engineio_session_sup]}
+          ]}}.
