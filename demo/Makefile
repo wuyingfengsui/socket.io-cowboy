@@ -1,3 +1,3 @@
 compile:
 	mkdir -p ebin
-	erlc -o ebin enginedemo_mgr.erl enginedemo.erl
+	erlc -o ebin demo_mgr.erl demo.erl

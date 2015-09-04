@@ -14,13 +14,17 @@
 %% limitations under the License.
 -module(socketio_handler).
 -author('Kirill Trofimov <sinnus@gmail.com>').
+-author('wuyingfengsui@gmail.com').
+-author('Jói Sigurdsson <joi@crankwheel.com>').
 -include("socketio_internal.hrl").
 
 -export([init/2, terminate/3,
          info/3,
          websocket_handle/3, websocket_info/3]).
 
--record(http_state, {action, config, sid, heartbeat_tref, messages, pid, jsonp, loop = false}).
+% TODO(joi): How do we get notified of session timeout (info timeout)?
+
+-record(http_state, {config, sid, heartbeat_tref, messages, pid, jsonp}).
 -record(websocket_state, {config, pid, messages}).
 
 init(Req, [Config]) ->
@@ -31,17 +35,17 @@ init(Req, [Config]) ->
     JsonP = proplists:get_value(<<"j">>, KeyValues),
     case {Transport, Sid} of
         {<<"polling">>, undefined} ->
-            handle(Req2, #http_state{action = create_session, config = Config, jsonp = JsonP});
+            create_session(Req2, #http_state{config = Config, jsonp = JsonP});
         {<<"polling">>, _} when is_binary(Sid) ->
             handle_polling(Req2, Sid, Config, JsonP);
         {<<"websocket">>, _} ->
             websocket_init(Req, Config);
         _ ->
-            handle(Req2, #http_state{config = Config})
+            {ok, cowboy_req:reply(404, [], <<>>, Req2), #http_state{}}
     end.
 
 %% Http handlers
-handle(Req, HttpState = #http_state{action = create_session, jsonp = JsonP, config = #config{
+create_session(Req, HttpState = #http_state{jsonp = JsonP, config = #config{
     heartbeat = HeartbeatInterval,
     heartbeat_timeout = HeartbeatTimeout,
     session_timeout = SessionTimeout,
@@ -73,46 +77,19 @@ handle(Req, HttpState = #http_state{action = create_session, jsonp = JsonP, conf
     end,
 
     Req1 = cowboy_req:reply(200, HttpHeaders, <<Result2/binary>>, Req),
-    {ok_or_stop(HttpState), Req1, HttpState};
+    {ok, Req1, HttpState}.
 
-handle(Req, HttpState = #http_state{action = data, messages = Messages, jsonp = JsonP}) ->
-    {ok, Req1} = reply_messages(Req, Messages, false, JsonP),
-    {ok_or_stop(HttpState), Req1, HttpState};
-
-handle(Req, HttpState = #http_state{action = not_found}) ->
-    Req1 = cowboy_req:reply(404, [], <<>>, Req),
-    {ok_or_stop(HttpState), Req1, HttpState};
-
-handle(Req, HttpState = #http_state{action = send}) ->
-    Req1 = cowboy_req:reply(200, [], <<>>, Req),
-    {ok_or_stop(HttpState), Req1, HttpState};
-
-handle(Req, HttpState = #http_state{action = session_in_use}) ->
-    Req1 = cowboy_req:reply(404, [], <<>>, Req),
-    {ok_or_stop(HttpState), Req1, HttpState};
-
-handle(Req, HttpState = #http_state{action = ok}) ->
-    Req1 = cowboy_req:reply(200, text_headers(), <<"ok">>, Req),
-    {ok_or_stop(HttpState), Req1, HttpState};
-
-handle(Req, HttpState) ->
-    Req1 = cowboy_req:reply(404, [], <<>>, Req),
-    {ok_or_stop(HttpState), Req1, HttpState}.
-
-info({timeout, TRef, {?MODULE, Pid}}, Req, HttpState = #http_state{action = heartbeat, heartbeat_tref = TRef}) ->
+% Invariant in all of these: We are an HTTP loop handler.
+info({timeout, TRef, {?MODULE, Pid}}, Req, HttpState = #http_state{heartbeat_tref = TRef}) ->
     safe_poll(Req, HttpState#http_state{heartbeat_tref = undefined}, Pid, false);
-
-info({message_arrived, Pid}, Req, HttpState = #http_state{action = heartbeat}) ->
+info({message_arrived, Pid}, Req, HttpState) ->
     safe_poll(Req, HttpState, Pid, true);
-
 info(_Info, Req, HttpState) ->
+    % TODO(joi): Log the unexpected message.
     {ok, Req, HttpState}.
 
-terminate(_Reason, _Req, _HttpState = #http_state{action = create_session}) ->
-    ok;
-terminate(_Reason, _Req, _HttpState = #http_state{action = session_in_use}) ->
-    ok;
 terminate(_Reason, _Req, _HttpState = #http_state{heartbeat_tref = HeartbeatTRef, pid = Pid}) ->
+    % Invariant: We are an HTTP handler (loop or regular).
     safe_unsub_caller(Pid, self()),
     case HeartbeatTRef of
         undefined ->
@@ -121,18 +98,13 @@ terminate(_Reason, _Req, _HttpState = #http_state{heartbeat_tref = HeartbeatTRef
             erlang:cancel_timer(HeartbeatTRef)
     end;
 terminate(_Reason, _Req, #websocket_state{pid = Pid}) ->
+    % Invariant: We are a WebSocket handler.
     socketio_session:disconnect(Pid),
     ok.
 
-text_headers() ->
-    [
-        {<<"Content-Type">>, <<"text/plain; charset=utf-8">>}
-    ].
+text_headers() -> [ {<<"Content-Type">>, <<"text/plain; charset=utf-8">>} ].
 
-stream_headers() ->
-    [
-        {<<"Content-Type">>, <<"application/octet-stream">>}
-    ].
+stream_headers() -> [ {<<"Content-Type">>, <<"application/octet-stream">>} ].
 
 javascript_headers() ->
     [
@@ -140,32 +112,31 @@ javascript_headers() ->
         {<<"X-XSS-Protection">>, <<"0">>}
     ].
 
+% If SendNop is true, we must send at least one message to flush our queue,
+% so if the message queue is empty, we still send [nop].
 reply_messages(Req, Messages, SendNop, undefined) ->
     PacketList = case {SendNop, Messages} of
-                 {true, []} ->
-                     socketio_data_protocol:encode_v1([nop]);
-                 _ ->
-                     socketio_data_protocol:encode_v1(Messages)
-             end,
+        {true, []} ->
+            socketio_data_protocol:encode_v1([nop]);
+        _ ->
+            socketio_data_protocol:encode_v1(Messages)
+    end,
     PacketListBin = encode_polling_xhr_packets_v1(PacketList),
     cowboy_req:reply(200, stream_headers(), PacketListBin, Req);
-
 reply_messages(Req, Messages, SendNop, JsonP) ->
     PacketList = case {SendNop, Messages} of
-                     {true, []} ->
-                         socketio_data_protocol:encode_v1([nop]);
-                     _ ->
-                         socketio_data_protocol:encode_v1(Messages)
-                 end,
+        {true, []} ->
+            socketio_data_protocol:encode_v1([nop]);
+        _ ->
+            socketio_data_protocol:encode_v1(Messages)
+    end,
     PacketListBin = encode_polling_json_packets_v1(PacketList, JsonP),
     cowboy_req:reply(200, javascript_headers(), PacketListBin, Req).
 
 safe_unsub_caller(undefined, _Caller) ->
     ok;
-
 safe_unsub_caller(_Pid, undefined) ->
     ok;
-
 safe_unsub_caller(Pid, Caller) ->
     try
         socketio_session:unsub_caller(Pid, Caller),
@@ -176,36 +147,26 @@ safe_unsub_caller(Pid, Caller) ->
     end.
 
 safe_poll(Req, HttpState = #http_state{jsonp = JsonP}, Pid, WaitIfEmpty) ->
+    % INVARIANT: We are an HTTP loop handler.
     try
         Messages = socketio_session:poll(Pid),
-        case {WaitIfEmpty, Messages} of
-            {true, []} ->
-                case socketio_session:transport(Pid) of
-                    websocket ->
-                        {ok, Req1} = reply_messages(Req, [], true, JsonP),
-                        {ok, Req1, HttpState};
-                    _ ->
-                        % Always 'ok', never 'stop' for loop handler.
-                        {ok, Req, HttpState}
-                end;
+        Transport = socketio_session:transport(Pid),
+        case {Transport, WaitIfEmpty, Messages} of
+            {websocket, _, _} ->
+                % Our transport has been switched to websocket, so we flush
+                % the transport, sending a nop if there are no messages in the
+                % queue.
+                {stop, reply_messages(Req, Messages, true, JsonP), Req};
+            {_, true, []} ->
+                % Not responding with 'stop' will make the loop handler continue
+                % to wait.
+                {ok, Req, HttpState};
             _ ->
-                {ok, Req1} = reply_messages(Req, Messages, true, JsonP),
-                {ok_or_stop(HttpState), Req1, HttpState}
+                {stop, reply_messages(Req, Messages, true, JsonP), Req}
         end
     catch
         exit:{noproc, _} ->
-            RD = cowboy_req:reply(404, [], <<>>, Req),
-            {ok_or_stop(HttpState), RD, HttpState#http_state{action = disconnect}}
-    end.
-
-% Used to decide whether to return 'ok' or 'stop' as the first entry in the
-% return tuple, when a response has been sent. If we're a loop handler, we're
-% supposed to return 'stop' after a response was sent.
-ok_or_stop(HttpState = #http_state{loop = Loop}) ->
-    ?DBGPRINT(HttpState),
-    case Loop of
-        true -> ok; %stop;
-        _ -> ok
+            {stop, cowboy_req:reply(404, [], <<>>, Req), HttpState}
     end.
 
 handle_polling(Req, Sid, Config, JsonP) ->
@@ -214,18 +175,22 @@ handle_polling(Req, Sid, Config, JsonP) ->
         {{ok, Pid}, <<"GET">>} ->
             case socketio_session:pull_no_wait(Pid, self()) of
                 {error, noproc} ->
-                    {ok, cowboy_req:reply(400, <<"Can't upgrade">>, Req), #http_state{action = error, config = Config, sid = Sid, jsonp = JsonP}};
+                    {ok, cowboy_req:reply(400, <<"No such session">>, Req), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                 session_in_use ->
-                    {ok, cowboy_req:reply(400, <<"Can't upgrade">>, Req), #http_state{action = error, config = Config, sid = Sid, jsonp = JsonP}};
+                    {ok, cowboy_req:reply(400, <<"Session in use">>, Req), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                 [] ->
                     case socketio_session:transport(Pid) of
                         websocket ->
-                            {ok, Req, #http_state{action = data, messages = [nop], config = Config, sid = Sid, pid = Pid, jsonp = JsonP}};
+                            % Just send a NOP to flush this transport.
+                            % TODO(joi): Not sure this is right; are we supposed to first send outstanding messages, then the nop?
+                            {ok, reply_messages(Req, [], true, JsonP), #http_state{messages = [], config = Config, sid = Sid, pid = Pid, jsonp = JsonP}};
                         _ ->
-                            {cowboy_loop, Req, #http_state{action = heartbeat, config = Config, sid = Sid, pid = Pid, jsonp = JsonP, loop = true}}
+                            TRef = erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
+                            {cowboy_loop, Req, #http_state{config = Config, sid = Sid, heartbeat_tref = TRef, pid = Pid, jsonp = JsonP}}
                     end;
                 Messages ->
-                    {ok, Req, #http_state{action = data, messages = Messages, config = Config, sid = Sid, pid = Pid, jsonp = JsonP}}
+                    Req1 = reply_messages(Req, Messages, false, JsonP),
+                    {ok, Req1, #http_state{messages = Messages, config = Config, sid = Sid, pid = Pid, jsonp = JsonP}}
             end;
         {{ok, Pid}, <<"POST">>} ->
             case get_request_data(Req, JsonP) of
@@ -240,17 +205,19 @@ handle_polling(Req, Sid, Config, JsonP) ->
                                end,
                     case socketio_session:recv(Pid, Messages) of
                         noproc ->
-                            {ok, cowboy_req:reply(400, <<"Can't upgrade">>, Req2), #http_state{action = error, config = Config, sid = Sid, jsonp = JsonP}};
+                            {ok, cowboy_req:reply(400, <<"Wrong sid">>, Req2), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                         _ ->
-                            {ok, Req2, #http_state{action = ok, config = Config, sid = Sid, jsonp = JsonP}}
+                            Req3 = cowboy_req:reply(200, text_headers(), <<"ok">>, Req2),
+                            {ok, Req3, #http_state{config = Config, sid = Sid, jsonp = JsonP}}
                     end;
                 error ->
-                    {ok, cowboy_req:reply(400, <<"Can't upgrade">>, Req), #http_state{action = error, config = Config, sid = Sid}}
+                    {ok, cowboy_req:reply(400, <<"Error reading request data">>, Req), #http_state{config = Config, sid = Sid}}
             end;
         {{error, not_found}, _} ->
-            {ok, Req, #http_state{action = not_found, sid = Sid, config = Config, jsonp = JsonP}};
+            Req1 = cowboy_req:reply(404, [], <<"Not found">>, Req),
+            {ok, Req1, #http_state{sid = Sid, config = Config, jsonp = JsonP}};
         _ ->
-            {ok, Req, #http_state{action = error, sid = Sid, config = Config, jsonp = JsonP}}
+            {ok, cowboy_req:reply(400, <<"Unknown error">>, Req), #http_state{sid = Sid, config = Config, jsonp = JsonP}}
     end.
 
 %% Websocket handlers
@@ -290,6 +257,7 @@ websocket_handle({text, Data}, Req, State = #websocket_state{ pid = Pid }) ->
             end
     end;
 websocket_handle(_Data, Req, State) ->
+    % TODO(joi): Log
     {ok, Req, State}.
 
 websocket_info(go, Req, State = #websocket_state{pid = Pid, messages = RestMessages}) ->
@@ -297,7 +265,7 @@ websocket_info(go, Req, State = #websocket_state{pid = Pid, messages = RestMessa
         {error, noproc} ->
             {shutdown, Req, State};
         session_in_use ->
-            {ok, Req, State};
+            {ok, Req, State};  % TODO(joi): Really?
         Messages ->
             RestMessages2 = lists:append([RestMessages, Messages]),
             self() ! go_rest,
@@ -313,9 +281,7 @@ websocket_info(go_rest, Req, State = #websocket_state{messages = RestMessages}) 
             [Packet] = socketio_data_protocol:encode_v1([Message]),
             {reply, {text, Packet}, Req, State#websocket_state{messages = Rest}}
     end;
-websocket_info({message_arrived, Pid}, Req, State = #websocket_state{
-    pid = Pid, messages = RestMessages
-}) ->
+websocket_info({message_arrived, Pid}, Req, State = #websocket_state{pid = Pid, messages = RestMessages}) ->
     Messages =  case socketio_session:safe_poll(Pid) of
                     {error, noproc} ->
                         [];
@@ -328,6 +294,7 @@ websocket_info({message_arrived, Pid}, Req, State = #websocket_state{
 websocket_info({'DOWN', _Ref, process, Pid, _Reason}, Req, State = #websocket_state{pid = Pid}) ->
     {shutdown, Req, State};
 websocket_info(_Info, Req, State) ->
+    % TODO(joi): Log
     {ok, Req, State}.
 
 enable_cors(Req) ->

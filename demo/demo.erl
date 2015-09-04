@@ -1,4 +1,4 @@
--module(enginedemo).
+-module(demo).
 
 -export([start/0, open/4, recv/4, handle_info/4, close/3]).
 
@@ -20,7 +20,7 @@ start() ->
         ]}
     ]),
 
-    enginedemo_mgr:start_link(),
+    demo_mgr:start_link(),
 
     cowboy:start_http(socketio_http_listener, 100, [{host, "127.0.0.1"},
         {port, 8080}], [{env, [{dispatch, Dispatch}]}]).
@@ -28,12 +28,12 @@ start() ->
 %% ---- Handlers
 open(Pid, Sid, _Opts, _PeerAddress) ->
     error_logger:info_msg("open ~p ~p~n", [Pid, Sid]),
-    enginedemo_mgr:add_session(Pid),
+    demo_mgr:add_session(Pid),
     {ok, #session_state{}}.
 
 recv(_Pid, _Sid, {json, <<>>, Json}, SessionState = #session_state{}) ->
     error_logger:info_msg("recv json ~p~n", [Json]),
-    enginedemo_mgr:publish_to_all(Json),
+    demo_mgr:publish_to_all(Json),
     {ok, SessionState};
 
 recv(Pid, _Sid, {message, <<>>, Message}, SessionState = #session_state{}) ->
@@ -42,7 +42,7 @@ recv(Pid, _Sid, {message, <<>>, Message}, SessionState = #session_state{}) ->
 
 recv(_Pid, _Sid, {event, _EndPoint, EventName, ArgsList}, SessionState = #session_state{}) ->
     error_logger:info_msg("recv event~nname: ~p~nargs: ~p~n", [EventName, ArgsList]),
-    enginedemo_mgr:emit_to_all(EventName, ArgsList),
+    demo_mgr:emit_to_all(EventName, ArgsList),
     {ok, SessionState};
 
 recv(Pid, Sid, Message, SessionState = #session_state{}) ->
@@ -54,5 +54,5 @@ handle_info(_Pid, _Sid, _Info, SessionState = #session_state{}) ->
 
 close(Pid, Sid, _SessionState = #session_state{}) ->
     error_logger:info_msg("close ~p ~p~n", [Pid, Sid]),
-    enginedemo_mgr:remove_session(Pid),
+    demo_mgr:remove_session(Pid),
     ok.

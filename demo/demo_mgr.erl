@@ -1,4 +1,4 @@
--module(enginedemo_mgr).
+-module(demo_mgr).
 
 -behaviour(gen_server).
 
