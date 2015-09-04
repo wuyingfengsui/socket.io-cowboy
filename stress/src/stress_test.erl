@@ -30,15 +30,15 @@ start() ->
     ibrowse:set_max_sessions(Host, Port, N),
     ibrowse:set_max_pipeline_size(Host, Port, N),
 
-    SocketIoUrl = "http://" ++ Host ++ ":" ++ integer_to_list(Port) ++ "/socket.io",
+    engineioUrl = "http://" ++ Host ++ ":" ++ integer_to_list(Port) ++ "/socket.io",
 
-    error_logger:info_msg("***** Starting stress clients. Url ~p~n", [SocketIoUrl]),
-    ok = start_stress_clients(SocketIoUrl, N),
+    error_logger:info_msg("***** Starting stress clients. Url ~p~n", [engineioUrl]),
+    ok = start_stress_clients(engineioUrl, N),
     error_logger:info_msg("***** ~p stress clients started~n", [N]).
 
 start_stress_clients(_, 0) ->
     ok;
 
-start_stress_clients(SocketIoUrl, N) ->
-    {ok, _} = stress_client:start_link(SocketIoUrl),
-    start_stress_clients(SocketIoUrl, N - 1).
+start_stress_clients(engineioUrl, N) ->
+    {ok, _} = stress_client:start_link(engineioUrl),
+    start_stress_clients(engineioUrl, N - 1).

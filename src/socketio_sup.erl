@@ -12,7 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
--module(socketio_sup).
+-module(engineio_sup).
 -author('Kirill Trofimov <sinnus@gmail.com>').
 -behaviour(supervisor).
 
@@ -31,6 +31,6 @@ init([]) ->
            {uuids, {uuids, start, []},
             permanent, 5000, worker, [uuids]},
 
-           {socketio_session_sup, {socketio_session_sup, start_link, []},
-            permanent, 5000, supervisor, [socketio_session_sup]}
+           {engineio_session_sup, {engineio_session_sup, start_link, []},
+            permanent, 5000, supervisor, [engineio_session_sup]}
           ]}}.

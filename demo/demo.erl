@@ -6,12 +6,12 @@
 
 start() ->
     ok = mnesia:start(),
-    ok = socketio_session:init_mnesia(),
-    ok = socketio:start(),
+    ok = engineio_session:init_mnesia(),
+    ok = engineio:start(),
 
     Dispatch = cowboy_router:compile([
         {'_', [
-            {"/engine.io/[...]", socketio_handler, [socketio_session:configure([{heartbeat, 25000},
+            {"/engine.io/[...]", engineio_handler, [engineio_session:configure([{heartbeat, 25000},
                 {heartbeat_timeout, 60000},
                 {session_timeout, 60000},
                 {callback, ?MODULE}])]
@@ -22,7 +22,7 @@ start() ->
 
     demo_mgr:start_link(),
 
-    cowboy:start_http(socketio_http_listener, 100, [{host, "127.0.0.1"},
+    cowboy:start_http(engineio_http_listener, 100, [{host, "127.0.0.1"},
         {port, 8080}], [{env, [{dispatch, Dispatch}]}]).
 
 %% ---- Handlers
@@ -37,7 +37,7 @@ recv(_Pid, _Sid, {json, <<>>, Json}, SessionState = #session_state{}) ->
     {ok, SessionState};
 
 recv(Pid, _Sid, {message, <<>>, Message}, SessionState = #session_state{}) ->
-    socketio_session:send_message(Pid, Message),
+    engineio_session:send_message(Pid, Message),
     {ok, SessionState};
 
 recv(_Pid, _Sid, {event, _EndPoint, EventName, ArgsList}, SessionState = #session_state{}) ->

@@ -12,11 +12,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
--module(socketio_handler).
+-module(engineio_handler).
 -author('Kirill Trofimov <sinnus@gmail.com>').
 -author('wuyingfengsui@gmail.com').
 -author('Jói Sigurdsson <joi@crankwheel.com>').
--include("socketio_internal.hrl").
+-include("engineio_internal.hrl").
 
 -export([init/2, terminate/3,
          info/3,
@@ -55,7 +55,7 @@ create_session(Req, HttpState = #http_state{jsonp = JsonP, config = #config{
     Sid = uuids:new(),
     PeerAddress = cowboy_req:peer(Req),
 
-    _Pid = socketio_session:create(Sid, SessionTimeout, Callback, Opts, PeerAddress),
+    _Pid = engineio_session:create(Sid, SessionTimeout, Callback, Opts, PeerAddress),
 
     Result = jiffy:encode({[
         {<<"sid">>, Sid},
@@ -99,7 +99,7 @@ terminate(_Reason, _Req, _HttpState = #http_state{heartbeat_tref = HeartbeatTRef
     end;
 terminate(_Reason, _Req, #websocket_state{pid = Pid}) ->
     % Invariant: We are a WebSocket handler.
-    socketio_session:disconnect(Pid),
+    engineio_session:disconnect(Pid),
     ok.
 
 text_headers() -> [ {<<"Content-Type">>, <<"text/plain; charset=utf-8">>} ].
@@ -117,18 +117,18 @@ javascript_headers() ->
 reply_messages(Req, Messages, SendNop, undefined) ->
     PacketList = case {SendNop, Messages} of
         {true, []} ->
-            socketio_data_protocol:encode_v1([nop]);
+            engineio_data_protocol:encode_v1([nop]);
         _ ->
-            socketio_data_protocol:encode_v1(Messages)
+            engineio_data_protocol:encode_v1(Messages)
     end,
     PacketListBin = encode_polling_xhr_packets_v1(PacketList),
     cowboy_req:reply(200, stream_headers(), PacketListBin, Req);
 reply_messages(Req, Messages, SendNop, JsonP) ->
     PacketList = case {SendNop, Messages} of
         {true, []} ->
-            socketio_data_protocol:encode_v1([nop]);
+            engineio_data_protocol:encode_v1([nop]);
         _ ->
-            socketio_data_protocol:encode_v1(Messages)
+            engineio_data_protocol:encode_v1(Messages)
     end,
     PacketListBin = encode_polling_json_packets_v1(PacketList, JsonP),
     cowboy_req:reply(200, javascript_headers(), PacketListBin, Req).
@@ -139,7 +139,7 @@ safe_unsub_caller(_Pid, undefined) ->
     ok;
 safe_unsub_caller(Pid, Caller) ->
     try
-        socketio_session:unsub_caller(Pid, Caller),
+        engineio_session:unsub_caller(Pid, Caller),
         ok
     catch
         exit:{noproc, _} ->
@@ -149,8 +149,8 @@ safe_unsub_caller(Pid, Caller) ->
 safe_poll(Req, HttpState = #http_state{jsonp = JsonP}, Pid, WaitIfEmpty) ->
     % INVARIANT: We are an HTTP loop handler.
     try
-        Messages = socketio_session:poll(Pid),
-        Transport = socketio_session:transport(Pid),
+        Messages = engineio_session:poll(Pid),
+        Transport = engineio_session:transport(Pid),
         case {Transport, WaitIfEmpty, Messages} of
             {websocket, _, _} ->
                 % Our transport has been switched to websocket, so we flush
@@ -171,15 +171,15 @@ safe_poll(Req, HttpState = #http_state{jsonp = JsonP}, Pid, WaitIfEmpty) ->
 
 handle_polling(Req, Sid, Config, JsonP) ->
     Method = cowboy_req:method(Req),
-    case {socketio_session:find(Sid), Method} of
+    case {engineio_session:find(Sid), Method} of
         {{ok, Pid}, <<"GET">>} ->
-            case socketio_session:pull_no_wait(Pid, self()) of
+            case engineio_session:pull_no_wait(Pid, self()) of
                 {error, noproc} ->
                     {ok, cowboy_req:reply(400, <<"No such session">>, Req), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                 session_in_use ->
                     {ok, cowboy_req:reply(400, <<"Session in use">>, Req), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                 [] ->
-                    case socketio_session:transport(Pid) of
+                    case engineio_session:transport(Pid) of
                         websocket ->
                             % Just send a NOP to flush this transport.
                             % TODO(joi): Not sure this is right; are we supposed to first send outstanding messages, then the nop?
@@ -195,7 +195,7 @@ handle_polling(Req, Sid, Config, JsonP) ->
         {{ok, Pid}, <<"POST">>} ->
             case get_request_data(Req, JsonP) of
                 {ok, Data2, Req2} ->
-                    Messages = case catch(socketio_data_protocol:decode_v1(Data2)) of
+                    Messages = case catch(engineio_data_protocol:decode_v1(Data2)) of
                                    {'EXIT', _Reason} ->
                                        [];
                                    {error, _Reason} ->
@@ -203,7 +203,7 @@ handle_polling(Req, Sid, Config, JsonP) ->
                                    Msgs ->
                                        Msgs
                                end,
-                    case socketio_session:recv(Pid, Messages) of
+                    case engineio_session:recv(Pid, Messages) of
                         noproc ->
                             {ok, cowboy_req:reply(400, <<"Wrong sid">>, Req2), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                         _ ->
@@ -225,10 +225,10 @@ websocket_init(Req, Config) ->
     KeyValues = cowboy_req:parse_qs(Req),
     case proplists:get_value(<<"sid">>, KeyValues, undefined) of
         Sid when is_binary(Sid) ->
-            case socketio_session:find(Sid) of
+            case engineio_session:find(Sid) of
                 {ok, Pid} ->
                     erlang:monitor(process, Pid),
-                    socketio_session:upgrade_transport(Pid, websocket),
+                    engineio_session:upgrade_transport(Pid, websocket),
                     {cowboy_websocket, Req, #websocket_state{config = Config, pid = Pid, messages = []}};
                 {error, not_found} ->
                     {ok, cowboy_req:reply(500, <<"No such session">>, Req)}
@@ -238,18 +238,18 @@ websocket_init(Req, Config) ->
     end.
 
 websocket_handle({text, Data}, Req, State = #websocket_state{ pid = Pid }) ->
-    case catch (socketio_data_protocol:decode_v1_for_websocket(Data)) of
+    case catch (engineio_data_protocol:decode_v1_for_websocket(Data)) of
         {'EXIT', _Reason} ->
             {ok, Req, State};
         [{ping, Rest}] ->
-            Packet = socketio_data_protocol:encode_v1({pong, Rest}),
-            socketio_session:refresh(Pid),
+            Packet = engineio_data_protocol:encode_v1({pong, Rest}),
+            engineio_session:refresh(Pid),
             {reply, {text, Packet}, Req, State};
         [upgrade] ->
             self() ! go,
             {ok, Req, State};
         Msgs ->
-            case socketio_session:recv(Pid, Msgs) of
+            case engineio_session:recv(Pid, Msgs) of
                 noproc ->
                     {shutdown, Req, State};
                 _ ->
@@ -261,7 +261,7 @@ websocket_handle(_Data, Req, State) ->
     {ok, Req, State}.
 
 websocket_info(go, Req, State = #websocket_state{pid = Pid, messages = RestMessages}) ->
-    case socketio_session:pull(Pid, self()) of
+    case engineio_session:pull(Pid, self()) of
         {error, noproc} ->
             {shutdown, Req, State};
         session_in_use ->
@@ -278,11 +278,11 @@ websocket_info(go_rest, Req, State = #websocket_state{messages = RestMessages}) 
         [Message | Rest] ->
             self() ! go_rest,
 
-            [Packet] = socketio_data_protocol:encode_v1([Message]),
+            [Packet] = engineio_data_protocol:encode_v1([Message]),
             {reply, {text, Packet}, Req, State#websocket_state{messages = Rest}}
     end;
 websocket_info({message_arrived, Pid}, Req, State = #websocket_state{pid = Pid, messages = RestMessages}) ->
-    Messages =  case socketio_session:safe_poll(Pid) of
+    Messages =  case engineio_session:safe_poll(Pid) of
                     {error, noproc} ->
                         [];
                     Result ->

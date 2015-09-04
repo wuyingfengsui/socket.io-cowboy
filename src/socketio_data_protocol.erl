@@ -1,8 +1,10 @@
--module(socketio_data_protocol).
+-module(engineio_data_protocol).
 -compile([{no_auto_import, [error/2]}]).
 -include_lib("eunit/include/eunit.hrl").
 
 %% The source code was taken and modified from https://github.com/yrashk/socket.io-erlang/blob/master/src/socketio_data_v1.erl
+
+% TODO(joi): Remove older protocol implementation (just keep _v1).
 
 -export([encode/1,encode_v1/1,decode/1,decode_v1/1, decode_v1_for_websocket/1]).
 

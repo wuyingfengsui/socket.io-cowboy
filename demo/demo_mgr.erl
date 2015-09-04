@@ -82,7 +82,7 @@ handle_call({remove_session, Pid}, _From, State) ->
 handle_call({publish_to_all, Json}, _From, State) ->
     Reply = ok,
     sets:fold(fun(Pid, AccIn) ->
-                      socketio_session:send_obj(Pid, Json),
+                      engineio_session:send_obj(Pid, Json),
                       AccIn
               end, notused, State#state.sessions),
     {reply, Reply, State};
@@ -90,7 +90,7 @@ handle_call({publish_to_all, Json}, _From, State) ->
 handle_call({emit_to_all, EventName, ArgsList}, _From, State) ->
     Reply = ok,
     sets:fold(fun(Pid, AccIn) ->
-        socketio_session:emit(Pid, EventName, ArgsList),
+        engineio_session:emit(Pid, EventName, ArgsList),
         AccIn
     end, notused, State#state.sessions),
     {reply, Reply, State};

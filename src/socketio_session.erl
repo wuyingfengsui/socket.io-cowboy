@@ -12,11 +12,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
--module(socketio_session).
+-module(engineio_session).
 -author('Kirill Trofimov <sinnus@gmail.com>').
 -behaviour(gen_server).
 
--include("socketio_internal.hrl").
+-include("engineio_internal.hrl").
 
 %% API
 -export([start_link/5, init_mnesia/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, safe_poll/1, send/2, recv/2,
@@ -26,7 +26,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--define(SESSION_PID_TABLE, socketio_session_to_pid).
+-define(SESSION_PID_TABLE, engineio_session_to_pid).
 
 -record(?SESSION_PID_TABLE, {sid, pid}).
 
@@ -59,7 +59,7 @@ init_mnesia() ->
         ram_copies).
 
 create(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
-    {ok, Pid} = socketio_session_sup:start_child(SessionId, SessionTimeout, Callback, Opts, PeerAddress),
+    {ok, Pid} = engineio_session_sup:start_child(SessionId, SessionTimeout, Callback, Opts, PeerAddress),
     Pid.
 
 find(SessionId) ->
@@ -286,7 +286,7 @@ process_messages([Message|Rest], State = #state{id = SessionId, callback = Callb
             {stop, normal, ok, State};
         heartbeat ->
             process_messages(Rest, State);
-        {ping, Data} ->                    %% only for socketio v1
+        {ping, Data} ->                    %% only for engineio v1
             send(self(), {pong, Data}),
             process_messages(Rest, State);
         {message, <<>>, EndPoint, Obj} ->
