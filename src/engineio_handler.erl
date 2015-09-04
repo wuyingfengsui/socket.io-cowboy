@@ -62,8 +62,7 @@ create_session(Req, HttpState = #http_state{jsonp = JsonP, config = #config{
     Result = jiffy:encode({[
         {<<"sid">>, Sid},
         {<<"pingInterval">>, HeartbeatInterval}, {<<"pingTimeout">>, HeartbeatTimeout},
-        % TODO(joi): Enable websocket protocol...
-        {<<"upgrades">>, []} %[<<"websocket">>]}
+        {<<"upgrades">>, [<<"websocket">>]}
     ]}),
 
     case JsonP of
@@ -293,11 +292,9 @@ websocket_info(go_rest, Req, State = #websocket_state{messages = RestMessages}) 
     case RestMessages of
         [] ->
             {ok, Req, State};
-        [Message | Rest] ->
-            self() ! go_rest,
-
-            [Packet] = engineio_data_protocol:encode_v1([Message]),
-            {reply, {text, Packet}, Req, State#websocket_state{messages = Rest}}
+        _ ->
+            Reply = [{text, engineio_data_protocol:encode_v1(M)} || M <- RestMessages],
+            {reply, Reply, Req, State#websocket_state{messages = []}}
     end;
 websocket_info({message_arrived, Pid}, Req, State = #websocket_state{pid = Pid, messages = RestMessages}) ->
     Messages =  case engineio_session:safe_poll(Pid) of
