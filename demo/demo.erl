@@ -31,22 +31,9 @@ open(Pid, Sid, _Opts, _PeerAddress) ->
     demo_mgr:add_session(Pid),
     {ok, #session_state{}}.
 
-recv(_Pid, _Sid, {json, <<>>, Json}, SessionState = #session_state{}) ->
-    error_logger:info_msg("recv json ~p~n", [Json]),
-    demo_mgr:publish_to_all(Json),
-    {ok, SessionState};
-
-recv(Pid, _Sid, {message, <<>>, Message}, SessionState = #session_state{}) ->
-    engineio_session:send_message(Pid, Message),
-    {ok, SessionState};
-
-recv(_Pid, _Sid, {event, _EndPoint, EventName, ArgsList}, SessionState = #session_state{}) ->
-    error_logger:info_msg("recv event~nname: ~p~nargs: ~p~n", [EventName, ArgsList]),
-    demo_mgr:emit_to_all(EventName, ArgsList),
-    {ok, SessionState};
-
-recv(Pid, Sid, Message, SessionState = #session_state{}) ->
-    error_logger:info_msg("recv ~p ~p ~p~n", [Pid, Sid, Message]),
+recv(Pid, Sid, {message, Message}, SessionState) ->
+    %error_logger:info_msg("recv first ~p ~p ~p~n", [Pid, Sid, Message]),
+    demo_mgr:publish_to_all(Message),
     {ok, SessionState}.
 
 handle_info(_Pid, _Sid, _Info, SessionState = #session_state{}) ->

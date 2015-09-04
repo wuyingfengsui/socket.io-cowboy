@@ -36,7 +36,9 @@ DEBUG="engine* node myapp"
         socket.on('open', function() {
             output('<span class="connect-msg">Client has connected to the server!</span>');
 
-            socket.on('message', function(data) {
+            socket.on('message', function(rawData) {
+                console.log('message', rawData);
+                var data = JSON.parse(rawData);
                 output('<span class="username-msg">' + data.userName + ':</span> ' + data.message);
             });
 

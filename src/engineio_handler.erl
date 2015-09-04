@@ -16,6 +16,7 @@
 -author('Kirill Trofimov <sinnus@gmail.com>').
 -author('wuyingfengsui@gmail.com').
 -author('Jói Sigurdsson <joi@crankwheel.com>').
+
 -include("engineio_internal.hrl").
 
 -export([init/2, terminate/3,
@@ -24,7 +25,7 @@
 
 % TODO(joi): How do we get notified of session timeout (info timeout)?
 
--record(http_state, {config, sid, heartbeat_tref, pid, jsonp}).
+-record(http_state, {config, sid, heartbeat_tref, pid, jsonp, dbgmethod, dbgurl}).
 -record(websocket_state, {config, pid, messages}).
 
 init(Req, [Config]) ->
@@ -61,7 +62,8 @@ create_session(Req, HttpState = #http_state{jsonp = JsonP, config = #config{
     Result = jiffy:encode({[
         {<<"sid">>, Sid},
         {<<"pingInterval">>, HeartbeatInterval}, {<<"pingTimeout">>, HeartbeatTimeout},
-        {<<"upgrades">>, []}  %[<<"websocket">>]}
+        % TODO(joi): Enable websocket protocol...
+        {<<"upgrades">>, []} %[<<"websocket">>]}
     ]}),
 
     case JsonP of
@@ -85,18 +87,22 @@ info({timeout, TRef, {?MODULE, Pid}}, Req, HttpState = #http_state{heartbeat_tre
     safe_poll(Req, HttpState#http_state{heartbeat_tref = undefined}, Pid, false);
 info({message_arrived, Pid}, Req, HttpState) ->
     safe_poll(Req, HttpState, Pid, true);
-info(_Info, Req, HttpState) ->
+info(Info, Req, HttpState) ->
     % TODO(joi): Log the unexpected message.
-    {ok, Req, HttpState}.
+    ?DBGPRINT(Info),
+    {stop, Req, HttpState}.
 
+% TODO(joi): We should perhapse end the session if we get Reason = {{error, closed}}.
 terminate(_Reason, _Req, _HttpState = #http_state{heartbeat_tref = HeartbeatTRef, pid = Pid}) ->
     % Invariant: We are an HTTP handler (loop or regular).
+    ?DBGPRINT({_Reason}),
     safe_unsub_caller(Pid, self()),
     case HeartbeatTRef of
         undefined ->
             ok;
         _ ->
-            erlang:cancel_timer(HeartbeatTRef)
+            erlang:cancel_timer(HeartbeatTRef),
+            ok
     end;
 terminate(_Reason, _Req, #websocket_state{pid = Pid}) ->
     % Invariant: We are a WebSocket handler.
@@ -157,13 +163,13 @@ safe_poll(Req, HttpState = #http_state{jsonp = JsonP}, Pid, WaitIfEmpty) ->
                 % Our transport has been switched to websocket, so we flush
                 % the transport, sending a nop if there are no messages in the
                 % queue.
-                {stop, reply_messages(Req, Messages, true, JsonP), Req};
+                {stop, reply_messages(Req, Messages, true, JsonP), HttpState};
             {_, true, []} ->
                 % Not responding with 'stop' will make the loop handler continue
                 % to wait.
                 {ok, Req, HttpState};
             _ ->
-                {stop, reply_messages(Req, Messages, true, JsonP), Req}
+                {stop, reply_messages(Req, Messages, true, JsonP), HttpState}
         end
     catch
         exit:{noproc, _} ->
@@ -181,7 +187,7 @@ handle_polling(Req, Sid, Config, JsonP) ->
                     {ok, cowboy_req:reply(400, <<"No such session">>, Req), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                 session_in_use ->
                     ?DBGPRINT({"Session in use", Pid}),
-                    {ok, cowboy_req:reply(400, <<"Session in use">>, Req), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
+                    {ok, cowboy_req:reply(404, <<"Session in use">>, Req), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                 [] ->
                     case engineio_session:transport(Pid) of
                         websocket ->
@@ -189,7 +195,7 @@ handle_polling(Req, Sid, Config, JsonP) ->
                             {ok, reply_messages(Req, [], true, JsonP), #http_state{config = Config, sid = Sid, pid = Pid, jsonp = JsonP}};
                         _ ->
                             TRef = erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
-                            {cowboy_loop, Req, #http_state{config = Config, sid = Sid, heartbeat_tref = TRef, pid = Pid, jsonp = JsonP}}
+                            {cowboy_loop, Req, #http_state{config = Config, sid = Sid, heartbeat_tref = TRef, pid = Pid, jsonp = JsonP, dbgmethod = Method, dbgurl = cowboy_req:path(Req)}}
                     end;
                 Messages ->
                     Req1 = reply_messages(Req, Messages, false, JsonP),
@@ -199,13 +205,16 @@ handle_polling(Req, Sid, Config, JsonP) ->
             case get_request_data(Req, JsonP) of
                 {ok, Data2, Req2} ->
                     Messages = case catch(engineio_data_protocol:decode_v1(Data2)) of
-                                   {'EXIT', _Reason} ->
+                                   {'EXIT', Reason} ->
+                                       ?DBGPRINT({exit_decoding_messages, Reason}),
                                        [];
-                                   {error, _Reason} ->
+                                   {error, Reason} ->
+                                       ?DBGPRINT({error_decoding_messages, Reason}),
                                        [];
                                    Msgs ->
                                        Msgs
                                end,
+                    ?DBGPRINT({Data2, Messages}),
                     case engineio_session:recv(Pid, Messages) of
                         noproc ->
                             ?DBGPRINT({"Wrong sid", noproc, Pid, Messages}),
