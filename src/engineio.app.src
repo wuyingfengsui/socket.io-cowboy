@@ -1,8 +1,8 @@
-{application, socketio, [
-	{description, "Socketio for cowboy."},
+{application, engineio, [
+	{description, "Engine.IO for cowboy."},
 	{vsn, "0.1.0"},
 	{modules, []},
-	{registered, [socketio_sup]},
+	{registered, [engineio_sup]},
 	{applications, [
 		kernel,
 		stdlib,
@@ -15,6 +15,6 @@
 		cowboy,
 		mnesia
 	]},
-	{mod, {socketio, []}},
+	{mod, {engineio, []}},
 	{env, []}
 ]}.
