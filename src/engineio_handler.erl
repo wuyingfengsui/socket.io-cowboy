@@ -24,7 +24,7 @@
 
 % TODO(joi): How do we get notified of session timeout (info timeout)?
 
--record(http_state, {config, sid, heartbeat_tref, messages, pid, jsonp}).
+-record(http_state, {config, sid, heartbeat_tref, pid, jsonp}).
 -record(websocket_state, {config, pid, messages}).
 
 init(Req, [Config]) ->
@@ -41,6 +41,7 @@ init(Req, [Config]) ->
         {<<"websocket">>, _} ->
             websocket_init(Req, Config);
         _ ->
+            ?DBGPRINT({"404, unknown tranpsort", Transport, Sid}),
             {ok, cowboy_req:reply(404, [], <<>>, Req2), #http_state{}}
     end.
 
@@ -166,6 +167,7 @@ safe_poll(Req, HttpState = #http_state{jsonp = JsonP}, Pid, WaitIfEmpty) ->
         end
     catch
         exit:{noproc, _} ->
+            ?DBGPRINT({"Couldn't talk to PID", Pid, JsonP, WaitIfEmpty}),
             {stop, cowboy_req:reply(404, [], <<>>, Req), HttpState}
     end.
 
@@ -175,22 +177,23 @@ handle_polling(Req, Sid, Config, JsonP) ->
         {{ok, Pid}, <<"GET">>} ->
             case engineio_session:pull_no_wait(Pid, self()) of
                 {error, noproc} ->
+                    ?DBGPRINT({"No such session", Pid}),
                     {ok, cowboy_req:reply(400, <<"No such session">>, Req), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                 session_in_use ->
+                    ?DBGPRINT({"Session in use", Pid}),
                     {ok, cowboy_req:reply(400, <<"Session in use">>, Req), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                 [] ->
                     case engineio_session:transport(Pid) of
                         websocket ->
                             % Just send a NOP to flush this transport.
-                            % TODO(joi): Not sure this is right; are we supposed to first send outstanding messages, then the nop?
-                            {ok, reply_messages(Req, [], true, JsonP), #http_state{messages = [], config = Config, sid = Sid, pid = Pid, jsonp = JsonP}};
+                            {ok, reply_messages(Req, [], true, JsonP), #http_state{config = Config, sid = Sid, pid = Pid, jsonp = JsonP}};
                         _ ->
                             TRef = erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
                             {cowboy_loop, Req, #http_state{config = Config, sid = Sid, heartbeat_tref = TRef, pid = Pid, jsonp = JsonP}}
                     end;
                 Messages ->
                     Req1 = reply_messages(Req, Messages, false, JsonP),
-                    {ok, Req1, #http_state{messages = Messages, config = Config, sid = Sid, pid = Pid, jsonp = JsonP}}
+                    {ok, Req1, #http_state{config = Config, sid = Sid, pid = Pid, jsonp = JsonP}}
             end;
         {{ok, Pid}, <<"POST">>} ->
             case get_request_data(Req, JsonP) of
@@ -205,18 +208,22 @@ handle_polling(Req, Sid, Config, JsonP) ->
                                end,
                     case engineio_session:recv(Pid, Messages) of
                         noproc ->
+                            ?DBGPRINT({"Wrong sid", noproc, Pid, Messages}),
                             {ok, cowboy_req:reply(400, <<"Wrong sid">>, Req2), #http_state{config = Config, sid = Sid, jsonp = JsonP}};
                         _ ->
                             Req3 = cowboy_req:reply(200, text_headers(), <<"ok">>, Req2),
                             {ok, Req3, #http_state{config = Config, sid = Sid, jsonp = JsonP}}
                     end;
                 error ->
+                    ?DBGPRINT({"Can't get request data", Req, JsonP}),
                     {ok, cowboy_req:reply(400, <<"Error reading request data">>, Req), #http_state{config = Config, sid = Sid}}
             end;
         {{error, not_found}, _} ->
+            ?DBGPRINT({"Can't find session", Sid, Method}),
             Req1 = cowboy_req:reply(404, [], <<"Not found">>, Req),
             {ok, Req1, #http_state{sid = Sid, config = Config, jsonp = JsonP}};
         _ ->
+            ?DBGPRINT({"Unknown error", Sid, Method, Config, JsonP}),
             {ok, cowboy_req:reply(400, <<"Unknown error">>, Req), #http_state{sid = Sid, config = Config, jsonp = JsonP}}
     end.
 
@@ -231,9 +238,11 @@ websocket_init(Req, Config) ->
                     engineio_session:upgrade_transport(Pid, websocket),
                     {cowboy_websocket, Req, #websocket_state{config = Config, pid = Pid, messages = []}};
                 {error, not_found} ->
+                    ?DBGPRINT({"No such session", Sid}),
                     {ok, cowboy_req:reply(500, <<"No such session">>, Req)}
             end;
-        _ ->
+        UnexpectedResult ->
+            ?DBGPRINT({"No SID provided", UnexpectedResult}),
             {ok, cowboy_req:reply(500, <<"No such session">>, Req)}
     end.
 
